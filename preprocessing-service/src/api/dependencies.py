@@ -1,0 +1,54 @@
+"""
+Dependency injection container for the API.
+Configures and provides all service dependencies.
+"""
+import os
+from src.domain.service import PreprocessingService
+from src.adapters.repository import TimescaleDBRepository
+from src.adapters.missing_values import PandasMissingValueHandler
+from src.adapters.outlier_detection import StatisticalOutlierDetector
+from src.adapters.feature_engineering import PandasFeatureEngineer
+from src.adapters.resampling import PandasResampler
+from src.adapters.logging import PythonLogger
+
+
+def get_preprocessing_service() -> PreprocessingService:
+    """
+    Factory function to create PreprocessingService with all dependencies.
+    In production, this could read from environment variables or config files.
+    """
+    
+    # Get configuration from environment
+    db_connection = os.getenv(
+        'DATABASE_URL', 
+        'postgresql://localhost/timeseries'
+    )
+    
+    # Initialize adapters
+    repository = TimescaleDBRepository(db_connection)
+    missing_handler = PandasMissingValueHandler()
+    outlier_detector = StatisticalOutlierDetector()
+    feature_engineer = PandasFeatureEngineer()
+    resampler = PandasResampler()
+    logger = PythonLogger("preprocessing-api")
+    
+    # Create and return service
+    return PreprocessingService(
+        repository=repository,
+        missing_handler=missing_handler,
+        outlier_detector=outlier_detector,
+        feature_engineer=feature_engineer,
+        resampler=resampler,
+        logger=logger
+    )
+
+
+# Singleton instance for the application
+_service_instance = None
+
+def get_service() -> PreprocessingService:
+    """Get or create singleton service instance"""
+    global _service_instance
+    if _service_instance is None:
+        _service_instance = get_preprocessing_service()
+    return _service_instance
