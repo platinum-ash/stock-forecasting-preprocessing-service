@@ -23,14 +23,14 @@ This service follows **hexagonal architecture**:
 
 ## Project Structure
 
-preprocessing-service/
-├── src/
-│ ├── domain/ # Core preprocessing logic
-│ ├── adapters/ # Infrastructure implementations
-│ └── api/ # REST API endpoints
-├── tests/ # Unit tests
-├── Dockerfile
-└── requirements.txt
+  preprocessing-service/
+  ├── src/
+  │ ├── domain/ # Core preprocessing logic
+  │ ├── adapters/ # Infrastructure implementations
+  │ └── api/ # REST API endpoints
+  ├── tests/ # Unit tests
+  ├── Dockerfile
+  └── requirements.txt
 
 ## Technology Stack
 
