@@ -15,7 +15,6 @@ from src.adapters.logging import PythonLogger
 def get_preprocessing_service() -> PreprocessingService:
     """
     Factory function to create PreprocessingService with all dependencies.
-    In production, this could read from environment variables or config files.
     """
     
     # Get configuration from environment

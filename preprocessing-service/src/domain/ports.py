@@ -1,6 +1,5 @@
 """
 Ports (interfaces) defining the contracts between core business logic and adapters.
-These are abstract interfaces.
 """
 from abc import ABC, abstractmethod
 from typing import List

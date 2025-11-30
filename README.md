@@ -19,4 +19,5 @@ preprocessing-service/
 │   ├── adapters/        # Infrastructure implementations
 │   └── api/             # REST API
 ├── tests/               # Unit tests
+├── Dockerfile 
 └── requirements.txt
