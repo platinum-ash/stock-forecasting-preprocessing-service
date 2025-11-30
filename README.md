@@ -21,19 +21,15 @@ This service follows **hexagonal architecture**:
 - **Adapters**: Technology-specific implementations (e.g., Pandas, database connectors)
 - **API Layer**: FastAPI REST endpoints to receive datasets and provide processed results
 
+
 ## Project Structure
+```
+preprocessing-service/
+├── src/
+│   ├── domain/          # Core business logic
+│   ├── adapters/        # Infrastructure implementations
+│   └── api/             # REST API
+├── tests/               # Unit tests
+├── Dockerfile 
+└── requirements.txt
 
-  preprocessing-service/
-  ├── src/
-  │ ├── domain/ # Core preprocessing logic
-  │ ├── adapters/ # Infrastructure implementations
-  │ └── api/ # REST API endpoints
-  ├── tests/ # Unit tests
-  ├── Dockerfile
-  └── requirements.txt
-
-## Technology Stack
-
-- **Python** + Pandas for preprocessing
-- **FastAPI** for REST endpoints
-- Dockerized for deployment
