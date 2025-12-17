@@ -33,10 +33,4 @@ preprocessing-service/
 ├── Dockerfile 
 └── requirements.txt
 
-
-
-podman run -it --rm \
-    -v rl_data:/workspace/data \
-    -p 6006:6006 \
-    deeplearning_sbs3:latest\
   
