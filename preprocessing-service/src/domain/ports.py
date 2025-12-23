@@ -2,7 +2,7 @@
 Ports (interfaces) defining the contracts between core business logic and adapters.
 """
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Dict, Any
 import pandas as pd
 from .models import TimeSeriesData, InterpolationMethod, OutlierMethod, AggregationMethod
 
@@ -125,4 +125,31 @@ class ILogger(ABC):
     @abstractmethod
     def debug(self, message: str):
         """Log debug message"""
+        pass
+
+
+class IEventPublisher(ABC):
+    """Port for publishing domain events to message broker"""
+    
+    @abstractmethod
+    async def publish_preprocessing_completed(
+        self,
+        series_id: str,
+        job_id: str,
+        data_points: int,
+        features_created: List[str],
+        metadata: Dict[str, Any]
+    ):
+        """Publish preprocessing completion event"""
+        pass
+    
+    @abstractmethod
+    async def publish_processing_failed(
+        self,
+        series_id: str,
+        job_id: str,
+        error: str,
+        stage: str
+    ):
+        """Publish processing failure event"""
         pass
