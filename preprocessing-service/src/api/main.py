@@ -1,20 +1,20 @@
 """
 FastAPI application - REST API entry point.
+Pure adapter, no knowledge of other adapters.
 """
 import sys
 import os
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 
-# 1. Get the directory of this file (src/api/)
 current_dir = os.path.dirname(os.path.abspath(__file__))
-
-# 2. Go up two levels to get the project root (preprocessing-service/)
 project_root = os.path.dirname(os.path.dirname(current_dir))
-
-# 3. Add the root to the system path
 sys.path.append(project_root)
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+
 from src.api.schemas import (
     PreprocessRequest,
     FeatureRequest,
@@ -30,14 +30,49 @@ from src.domain.models import (
     OutlierMethod,
     AggregationMethod
 )
+from src.application.container import get_container
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle"""
+    # Startup
+    logger.info("Starting application...")
+    container = get_container()
+    
+    try:
+        # Start Kafka consumer in background
+        consumer = container.get_kafka_consumer()
+        asyncio.create_task(consumer.start())
+        
+        logger.info("Application started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start application: {e}", exc_info=True)
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down application...")
+    try:
+        await container.shutdown()
+        logger.info("Application shut down successfully")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}", exc_info=True)
+
 
 app = FastAPI(
     title="Data Preprocessing Service",
     description="Hexagonal architecture implementation for time series preprocessing",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -50,10 +85,30 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """Health check endpoint"""
+    container = get_container()
+    consumer = container.get_kafka_consumer()
+    
     return {
         "service": "Data Preprocessing Service",
         "status": "running",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "kafka_consumer_running": consumer.is_running if consumer else False
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Detailed health check"""
+    container = get_container()
+    consumer = container.get_kafka_consumer()
+    
+    return {
+        "status": "healthy",
+        "components": {
+            "api": "running",
+            "kafka_consumer": "running" if (consumer and consumer.is_running) else "stopped",
+            "kafka_producer": "connected"
+        }
     }
 
 
@@ -63,9 +118,7 @@ async def preprocess_series(
     service: PreprocessingService = Depends(get_service)
 ):
     """
-    Preprocess time series data.
-    
-    Applies missing value handling, outlier detection, and resampling.
+    Preprocess time series data (synchronous REST endpoint).
     """
     try:
         config = PreprocessingConfig(
@@ -87,6 +140,7 @@ async def preprocess_series(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.error(f"Preprocessing error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -97,8 +151,6 @@ async def create_features(
 ):
     """
     Create engineered features from time series.
-    
-    Generates lag features, rolling statistics, and time-based features.
     """
     try:
         config = PreprocessingConfig(
@@ -117,6 +169,7 @@ async def create_features(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.error(f"Feature creation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -127,8 +180,6 @@ async def validate_series(
 ):
     """
     Validate time series data quality.
-    
-    Returns statistics about missing values, outliers, and data distribution.
     """
     try:
         validation = service.validate_data(series_id)
@@ -136,6 +187,7 @@ async def validate_series(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        logger.error(f"Validation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
