@@ -1,6 +1,7 @@
 """
 Kafka producer - Output adapter for publishing events.
 """
+import os
 import json
 import logging
 from datetime import datetime
@@ -21,8 +22,8 @@ class KafkaEventPublisher(IEventPublisher):
         failed_topic: str = 'data.processing.failed'
     ):
         self.bootstrap_servers = bootstrap_servers
-        self.completed_topic = completed_topic
-        self.failed_topic = failed_topic
+        self.completed_topic = os.getenv("KAFKA_OUTPUT_TOPIC", completed_topic)
+        self.failed_topic = os.getenv("KAFKA_ERR_TOPIC", failed_topic)
         self.producer: Optional[AIOKafkaProducer] = None
     
     async def _get_producer(self) -> AIOKafkaProducer:
