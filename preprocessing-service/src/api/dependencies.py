@@ -18,19 +18,27 @@ def get_preprocessing_service() -> PreprocessingService:
     """
     
     # Get configuration from environment
-    db_connection = os.getenv(
-        'DATABASE_URL', 
-        'postgresql://localhost/timeseries'
+    ingestion_db_url = os.getenv(
+        'INGESTION_DATABASE_URL', 
+        'postgresql://tsuser:ts_password@ingestion-timescaledb:5432/timeseries'
+    )
+    
+    preprocessing_db_url = os.getenv(
+        'PREPROCESSING_DATABASE_URL',
+        'postgresql://tsuser:ts_password@preprocessing-timescaledb:5432/preprocessing'
     )
     
     # Initialize adapters
     logger = PythonLogger("preprocessing-api")
-    repository = TimescaleDBRepository(db_connection, logger)
+    repository = TimescaleDBRepository(
+        ingestion_connection_string=ingestion_db_url,
+        preprocessing_connection_string=preprocessing_db_url,
+        logger=logger
+    )
     missing_handler = MissingValueHandler()
     outlier_detector = StatisticalOutlierDetector()
     feature_engineer = FeatureEngineer()
     resampler = Resampler()
-    
     
     # Create and return service
     return PreprocessingService(
@@ -45,6 +53,7 @@ def get_preprocessing_service() -> PreprocessingService:
 
 # Singleton instance for the application
 _service_instance = None
+
 
 def get_service() -> PreprocessingService:
     """Get or create singleton service instance"""

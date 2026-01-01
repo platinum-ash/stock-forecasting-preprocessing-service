@@ -17,40 +17,38 @@ class TimescaleDBRepository(ITimeSeriesRepository):
     """
     TimescaleDB adapter for time series storage using SQLAlchemy.
     Supports OHLCV (Open, High, Low, Close, Volume) data format.
+    Uses separate databases for raw (ingestion) and preprocessed data.
     """
 
-    def __init__(self, connection_string: str, logger:ILogger):
+    def __init__(
+        self, 
+        ingestion_connection_string: str,
+        preprocessing_connection_string: str,
+        logger: ILogger
+    ):
         """
-        Example connection string:
-        postgresql+psycopg2://user:password@timescaledb:5432/timeseries
+        Args:
+            ingestion_connection_string: Connection to ingestion database (read raw data)
+            preprocessing_connection_string: Connection to preprocessing database (write preprocessed data)
+            logger: Logger instance
+        
+        Example connection strings:
+        postgresql+psycopg2://user:password@ingestion-timescaledb:5432/timeseries
+        postgresql+psycopg2://user:password@preprocessing-timescaledb:5432/preprocessing
         """
-        self.engine = create_engine(connection_string, pool_pre_ping=True)
+        self.ingestion_engine = create_engine(ingestion_connection_string, pool_pre_ping=True)
+        self.preprocessing_engine = create_engine(preprocessing_connection_string, pool_pre_ping=True)
         self.logger = logger
 
-        # Ensure hypertables exist (idempotent)
-        self._initialize_schema()
+        # Ensure preprocessed schema exists (we don't modify ingestion DB)
+        self._initialize_preprocessing_schema()
 
-    def _initialize_schema(self):
-        """Create tables + hypertables if they do not exist."""
-        with self.engine.begin() as conn:
+    def _initialize_preprocessing_schema(self):
+        """Create preprocessed table + hypertable if they do not exist."""
+        with self.preprocessing_engine.begin() as conn:
             # Enable TimescaleDB extension
             conn.execute(text("""
             CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
-            """))
-
-            # Create raw data table
-            conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS time_series_raw (
-                series_id TEXT NOT NULL,
-                timestamp TIMESTAMPTZ NOT NULL,
-                open DOUBLE PRECISION,
-                high DOUBLE PRECISION,
-                low DOUBLE PRECISION,
-                close DOUBLE PRECISION,
-                volume DOUBLE PRECISION,
-                features JSONB DEFAULT '{}'::jsonb,
-                PRIMARY KEY(series_id, timestamp)
-            );
             """))
 
             # Create preprocessed data table
@@ -68,21 +66,17 @@ class TimescaleDBRepository(ITimeSeriesRepository):
             );
             """))
 
-            # Create hypertables
-            conn.execute(text("""
-            SELECT create_hypertable('time_series_raw', 'timestamp', if_not_exists => TRUE);
-            """))
-
+            # Create hypertable
             conn.execute(text("""
             SELECT create_hypertable('time_series_preprocessed', 'timestamp', if_not_exists => TRUE);
             """))
 
     # -------------------------------
-    # READ RAW DATA
+    # READ RAW DATA (from ingestion DB)
     # -------------------------------
     def get_raw_data(self, series_id: str) -> TimeSeriesData:
         """
-        Retrieve raw OHLCV data from TimescaleDB.
+        Retrieve raw OHLCV data from ingestion TimescaleDB.
         """
         query = text("""
             SELECT timestamp, open, high, low, close, volume, features
@@ -91,15 +85,17 @@ class TimescaleDBRepository(ITimeSeriesRepository):
             ORDER BY timestamp
         """)
 
-        with self.engine.connect() as conn:
+        with self.ingestion_engine.connect() as conn:
             df = pd.read_sql(query, conn, params={"sid": series_id})
 
         if df.empty:
             self.logger.info(f"Query returned {len(df)} rows for series_id: '{series_id}'")
             # Check what series_ids actually exist
-            with self.engine.connect() as conn:
-                existing = pd.read_sql(text("SELECT DISTINCT series_id FROM time_series_raw LIMIT 10"), conn)
-                self.logger.info(f"DEBUG: Query returned {len(df)} rows for series_id: '{series_id}'", flush=True)
+            with self.ingestion_engine.connect() as conn:
+                existing = pd.read_sql(
+                    text("SELECT DISTINCT series_id FROM time_series_raw LIMIT 10"), 
+                    conn
+                )
                 self.logger.info(f"No data found. Available series_ids: {existing['series_id'].tolist()}")
             raise ValueError(f"No raw data found for {series_id}")
 
@@ -115,81 +111,31 @@ class TimescaleDBRepository(ITimeSeriesRepository):
         )
 
     # -------------------------------
-    # SAVE RAW DATA
+    # SAVE RAW DATA (not used in preprocessing service)
     # -------------------------------
     def save_raw_data(self, series_id: str, data: TimeSeriesData) -> bool:
         """
-        Save raw OHLCV data to TimescaleDB.
+        This method is not used in preprocessing service.
+        Raw data is saved by the ingestion service.
         """
-        try:
-            df = data.to_dataframe()
-
-            # Ensure required columns exist
-            required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-            for col in required_cols:
-                if col not in df.columns:
-                    raise ValueError(f"Missing required column: {col}")
-
-            # Ensure features column exists
-            if 'features' not in df.columns:
-                df['features'] = [{}] * len(df)
-
-            insert_stmt = text("""
-            INSERT INTO time_series_raw 
-                (series_id, timestamp, open, high, low, close, volume, features)
-            VALUES 
-                (:series_id, :timestamp, :open, :high, :low, :close, :volume, :features)
-            ON CONFLICT (series_id, timestamp) DO UPDATE
-            SET open = EXCLUDED.open,
-                high = EXCLUDED.high,
-                low = EXCLUDED.low,
-                close = EXCLUDED.close,
-                volume = EXCLUDED.volume,
-                features = EXCLUDED.features;
-            """)
-
-            with self.engine.begin() as conn:
-                rows = [
-                    {
-                        "series_id": series_id,
-                        "timestamp": row["timestamp"],
-                        "open": float(row["open"]) if pd.notna(row["open"]) else None,
-                        "high": float(row["high"]) if pd.notna(row["high"]) else None,
-                        "low": float(row["low"]) if pd.notna(row["low"]) else None,
-                        "close": float(row["close"]) if pd.notna(row["close"]) else None,
-                        "volume": float(row["volume"]) if pd.notna(row["volume"]) else None,
-                        "features": json.dumps(row["features"]) if isinstance(row["features"], dict) else json.dumps({})
-                    }
-                    for _, row in df.iterrows()
-                ]
-                
-                conn.execute(insert_stmt, rows)
-
-            return True
-
-        except SQLAlchemyError as e:
-            print(f"Error saving raw data: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+        self.logger.warning("save_raw_data called on preprocessing service - this is handled by ingestion service")
+        return False
 
     # -------------------------------
-    # SAVE PREPROCESSED DATA
+    # SAVE PREPROCESSED DATA (to preprocessing DB)
     # -------------------------------
     def save_preprocessed_data(self, series_id: str, data: TimeSeriesData) -> bool:
         """
-        Save preprocessed OHLCV data to TimescaleDB.
+        Save preprocessed OHLCV data to preprocessing TimescaleDB.
         Features are stored as JSONB - one JSON object per timestamp.
         """
         try:
             df = data.to_dataframe()
 
             # Debug logging
-            print(f"DEBUG: DataFrame columns: {df.columns.tolist()}")
-            print(f"DEBUG: 'features' in columns: {'features' in df.columns}")
+            self.logger.info(f"Saving preprocessed data - DataFrame columns: {df.columns.tolist()}")
             if 'features' in df.columns and len(df) > 0:
-                print(f"DEBUG: First features value: {df['features'].iloc[0]}")
-                print(f"DEBUG: Features type: {type(df['features'].iloc[0])}")
+                self.logger.info(f"First features value type: {type(df['features'].iloc[0])}")
 
             # Ensure required columns exist
             required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
@@ -215,7 +161,7 @@ class TimescaleDBRepository(ITimeSeriesRepository):
                 features = EXCLUDED.features;
             """)
 
-            with self.engine.begin() as conn:
+            with self.preprocessing_engine.begin() as conn:
                 rows = [
                     {
                         "series_id": series_id,
@@ -230,26 +176,25 @@ class TimescaleDBRepository(ITimeSeriesRepository):
                     for _, row in df.iterrows()
                 ]
                 
-                # Debug: print first row
                 if rows:
-                    print(f"DEBUG: First row to insert: {rows[0]}")
+                    self.logger.info(f"Inserting {len(rows)} rows for series {series_id}")
                 
                 conn.execute(insert_stmt, rows)
 
             return True
 
         except SQLAlchemyError as e:
-            print(f"Error saving preprocessed data: {e}")
+            self.logger.error(f"Error saving preprocessed data: {e}")
             import traceback
             traceback.print_exc()
             return False
 
     # -------------------------------
-    # READ PREPROCESSED DATA
+    # READ PREPROCESSED DATA (from preprocessing DB)
     # -------------------------------
     def get_preprocessed_data(self, series_id: str) -> TimeSeriesData:
         """
-        Retrieve preprocessed OHLCV data with features from TimescaleDB.
+        Retrieve preprocessed OHLCV data with features from preprocessing TimescaleDB.
         Features are parsed from JSONB back into Python dicts.
         """
         query = text("""
@@ -259,7 +204,7 @@ class TimescaleDBRepository(ITimeSeriesRepository):
             ORDER BY timestamp
         """)
 
-        with self.engine.connect() as conn:
+        with self.preprocessing_engine.connect() as conn:
             df = pd.read_sql(query, conn, params={"sid": series_id})
 
         if df.empty:
@@ -279,20 +224,21 @@ class TimescaleDBRepository(ITimeSeriesRepository):
     def get_feature_names(self, series_id: str, table: str = 'preprocessed') -> list:
         """
         Get all unique feature names for a series.
-        Useful for understanding what features are available.
         
         Args:
             series_id: Time series identifier
             table: Either 'raw' or 'preprocessed'
         """
+        engine = self.ingestion_engine if table == 'raw' else self.preprocessing_engine
         table_name = f"time_series_{table}"
+        
         query = text(f"""
             SELECT DISTINCT jsonb_object_keys(features) as feature_name
             FROM {table_name}
             WHERE series_id = :sid
         """)
         
-        with self.engine.connect() as conn:
+        with engine.connect() as conn:
             result = conn.execute(query, {"sid": series_id})
             return [row[0] for row in result]
     
@@ -313,6 +259,7 @@ class TimescaleDBRepository(ITimeSeriesRepository):
         Returns:
             DataFrame with timestamp, OHLCV columns, and selected features as columns
         """
+        engine = self.ingestion_engine if table == 'raw' else self.preprocessing_engine
         table_name = f"time_series_{table}"
         
         # Build feature selection for each requested feature
@@ -333,7 +280,7 @@ class TimescaleDBRepository(ITimeSeriesRepository):
             ORDER BY timestamp
         """)
         
-        with self.engine.connect() as conn:
+        with engine.connect() as conn:
             df = pd.read_sql(query, conn, params={"sid": series_id})
         
         return df
@@ -352,14 +299,16 @@ class TimescaleDBRepository(ITimeSeriesRepository):
         Returns:
             Tuple of (earliest_timestamp, latest_timestamp)
         """
+        engine = self.ingestion_engine if table == 'raw' else self.preprocessing_engine
         table_name = f"time_series_{table}"
+        
         query = text(f"""
             SELECT MIN(timestamp) as earliest, MAX(timestamp) as latest
             FROM {table_name}
             WHERE series_id = :sid
         """)
         
-        with self.engine.connect() as conn:
+        with engine.connect() as conn:
             result = conn.execute(query, {"sid": series_id}).fetchone()
             return (result[0], result[1]) if result else (None, None)
     
@@ -374,13 +323,15 @@ class TimescaleDBRepository(ITimeSeriesRepository):
         Returns:
             Number of records
         """
+        engine = self.ingestion_engine if table == 'raw' else self.preprocessing_engine
         table_name = f"time_series_{table}"
+        
         query = text(f"""
             SELECT COUNT(*) as count
             FROM {table_name}
             WHERE series_id = :sid
         """)
         
-        with self.engine.connect() as conn:
+        with engine.connect() as conn:
             result = conn.execute(query, {"sid": series_id}).fetchone()
             return result[0] if result else 0

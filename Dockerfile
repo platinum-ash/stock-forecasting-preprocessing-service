@@ -16,7 +16,7 @@ RUN python3.11 -m pip install --no-cache-dir --upgrade pip \
     && python3.11 -m pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY preprocessing-service/src/ ./src/
+#COPY preprocessing-service/src/ ./src/
 COPY wait-for-db.sh /usr/local/bin/wait-for-db
 RUN chmod +x /usr/local/bin/wait-for-db
 
